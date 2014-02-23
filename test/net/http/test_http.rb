@@ -196,6 +196,13 @@ module TestNetHTTP_version_1_1_methods
   def test_s_get
     assert_equal $test_net_http_data,
         Net::HTTP.get(config('host'), '/', config('port'))
+
+    f = StringIO.new("".force_encoding("ASCII-8BIT"))
+    Net::HTTP.get(config('host'), '/', config('port')) do |chunk|
+      f.write chunk
+    end
+
+    assert_equal $test_net_http_data, f.string
   end
 
   def test_head

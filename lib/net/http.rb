@@ -451,8 +451,24 @@ module Net   #:nodoc:
     #
     #    print Net::HTTP.get('www.example.com', '/index.html')
     #
-    def HTTP.get(uri_or_host, path = nil, port = nil)
-      get_response(uri_or_host, path, port).body
+    # If called with a block, yields each fragment of the
+    # entity body in turn as a String as it is read from
+    # the socket.  Note that in this case, the returned response
+    # object will *not* contain a (meaningful) body.
+    #
+    #   File.open('result.zip', 'wb') {|f|
+    #     Net::HTTP.get('www.example.com', '/file.zip') do |chunk|
+    #       f.write chunk
+    #     end
+    #   }
+    def HTTP.get(uri_or_host, path = nil, port = nil, &block)
+      if block_given?
+        get_response(uri_or_host, path, port) {|res|
+          res.read_body &block
+        }
+      else
+        get_response(uri_or_host, path, port).body
+      end
     end
 
     # Sends a GET request to the target and returns the HTTP response
