@@ -1375,7 +1375,7 @@ rb_reg_adjust_startpos(VALUE re, VALUE str, long pos, int reverse)
 
 /* returns byte offset */
 long
-rb_reg_search(VALUE re, VALUE str, long pos, int reverse)
+rb_reg_search(VALUE re, VALUE str, long pos, int reverse, int set_backref_str)
 {
     long result;
     VALUE match;
@@ -1450,13 +1450,16 @@ rb_reg_search(VALUE re, VALUE str, long pos, int reverse)
 	    FL_UNSET(match, FL_TAINT);
     }
 
-    RMATCH(match)->str = rb_str_new4(str);
+    if (set_backref_str) {
+	RMATCH(match)->str = rb_str_new4(str);
+	OBJ_INFECT(match, str);
+    }
+
     RMATCH(match)->regexp = re;
     RMATCH(match)->rmatch->char_offset_updated = 0;
     rb_backref_set(match);
 
     OBJ_INFECT(match, re);
-    OBJ_INFECT(match, str);
 
     return result;
 }
@@ -2718,7 +2721,7 @@ reg_match_pos(VALUE re, VALUE *strp, long pos)
 	}
 	pos = rb_str_offset(str, pos);
     }
-    return rb_reg_search(re, str, pos, 0);
+    return rb_reg_search(re, str, pos, 0, 1);
 }
 
 /*
@@ -2809,7 +2812,7 @@ rb_reg_eqq(VALUE re, VALUE str)
 	rb_backref_set(Qnil);
 	return Qfalse;
     }
-    start = rb_reg_search(re, str, 0, 0);
+    start = rb_reg_search(re, str, 0, 0, 1);
     if (start < 0) {
 	return Qfalse;
     }
@@ -2839,7 +2842,7 @@ rb_reg_match2(VALUE re)
 	return Qnil;
     }
 
-    start = rb_reg_search(re, line, 0, 0);
+    start = rb_reg_search(re, line, 0, 0, 1);
     if (start < 0) {
 	return Qnil;
     }

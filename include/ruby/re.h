@@ -52,7 +52,7 @@ struct RMatch {
 #define RMATCH_REGS(obj)  (&(R_CAST(RMatch)(obj))->rmatch->regs)
 
 VALUE rb_reg_regcomp(VALUE);
-long rb_reg_search(VALUE, VALUE, long, int);
+long rb_reg_search(VALUE, VALUE, long, int, int);
 VALUE rb_reg_regsub(VALUE, VALUE, struct re_registers *, VALUE);
 long rb_reg_adjust_startpos(VALUE, VALUE, long, int);
 void rb_match_busy(VALUE);
