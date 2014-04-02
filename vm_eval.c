@@ -210,10 +210,12 @@ vm_call0_body(rb_thread_t* th, rb_call_info_t *ci, const VALUE *argv)
 	{
 	    VALUE new_args = rb_ary_new4(ci->argc, argv);
 
-	    RB_GC_GUARD(new_args);
 	    rb_ary_unshift(new_args, ID2SYM(ci->mid));
 	    th->passed_block = ci->blockptr;
-	    return rb_funcall2(ci->recv, idMethodMissing, ci->argc+1, RARRAY_PTR(new_args));
+	    ret = rb_funcall2(ci->recv, idMethodMissing, ci->argc+1,
+	                      RARRAY_CONST_PTR(new_args));
+	    RB_GC_GUARD(new_args);
+	    return ret;
 	}
       case VM_METHOD_TYPE_OPTIMIZED:
 	switch (ci->me->def->body.optimize_type) {
@@ -338,11 +340,13 @@ static VALUE
 check_funcall_exec(struct rescue_funcall_args *args)
 {
     VALUE new_args = rb_ary_new4(args->argc, args->argv);
+    VALUE ret;
 
-    RB_GC_GUARD(new_args);
     rb_ary_unshift(new_args, args->sym);
-    return rb_funcall2(args->recv, idMethodMissing,
-		       args->argc+1, RARRAY_PTR(new_args));
+    ret = rb_funcall2(args->recv, idMethodMissing,
+		       args->argc+1, RARRAY_CONST_PTR(new_args));
+    RB_GC_GUARD(new_args);
+    return ret;
 }
 
 static VALUE
@@ -747,7 +751,7 @@ rb_apply(VALUE recv, ID mid, VALUE args)
 	args = rb_ary_subseq(args, 0, argc);
 	RBASIC_CLEAR_CLASS(args);
 	OBJ_FREEZE(args);
-	ret = rb_call(recv, mid, argc, RARRAY_PTR(args), CALL_FCALL);
+	ret = rb_call(recv, mid, argc, RARRAY_CONST_PTR(args), CALL_FCALL);
 	RB_GC_GUARD(args);
 	return ret;
     }
@@ -1211,14 +1215,15 @@ eval_string_with_cref(VALUE self, VALUE src, VALUE scope, NODE *const cref_arg, 
 	VALUE absolute_path = Qnil;
 	VALUE fname;
 
+	if (file != Qundef) {
+	    absolute_path = file;
+	}
+
 	if (scope != Qnil) {
 	    bind = Check_TypedStruct(scope, &ruby_binding_data_type);
 	    {
 		envval = bind->env;
-		if (file != Qundef) {
-		    absolute_path = file;
-		}
-		else if (!NIL_P(bind->path)) {
+		if (NIL_P(absolute_path) && !NIL_P(bind->path)) {
 		    file = bind->path;
 		    line = bind->first_lineno;
 		    absolute_path = rb_current_realfilepath();
@@ -1478,7 +1483,7 @@ rb_eval_cmd(VALUE cmd, VALUE arg, int level)
 	rb_set_safe_level_force(level);
 	if ((state = EXEC_TAG()) == 0) {
 	    val = rb_funcall2(cmd, rb_intern("call"), RARRAY_LENINT(arg),
-			      RARRAY_PTR(arg));
+			      RARRAY_CONST_PTR(arg));
 	}
 	POP_TAG();
 

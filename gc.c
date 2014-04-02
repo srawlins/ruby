@@ -154,8 +154,8 @@ typedef struct {
 } ruby_gc_params_t;
 
 static ruby_gc_params_t gc_params = {
-    GC_HEAP_FREE_SLOTS,
     GC_HEAP_INIT_SLOTS,
+    GC_HEAP_FREE_SLOTS,
     GC_HEAP_GROWTH_FACTOR,
     GC_HEAP_GROWTH_MAX_SLOTS,
     GC_HEAP_OLDOBJECT_LIMIT_FACTOR,
@@ -354,6 +354,7 @@ typedef struct RVALUE {
 	struct RMatch  match;
 	struct RRational rational;
 	struct RComplex complex;
+	struct RSymbol symbol;
 	struct {
 	    struct RBasic basic;
 	    VALUE v1;
@@ -1652,6 +1653,12 @@ obj_free(rb_objspace_t *objspace, VALUE obj)
 	}
 	break;
 
+      case T_SYMBOL:
+	{
+            rb_gc_free_dsymbol(obj);
+	}
+	break;
+
       default:
 	rb_bug("gc_sweep(): unknown data type 0x%x(%p) 0x%"PRIxVALUE,
 	       BUILTIN_TYPE(obj), (void*)obj, RBASIC(obj)->flags);
@@ -2362,21 +2369,6 @@ id2ref(VALUE obj, VALUE objid)
  *      "hi".freeze.object_id == "hi".freeze.object_id # => true
  */
 
-/*
- *  call-seq:
- *     obj.hash    -> fixnum
- *
- *  Generates a Fixnum hash value for this object.
- *
- *  This function must have the property that <code>a.eql?(b)</code> implies
- *  <code>a.hash == b.hash</code>.
- *
- *  The hash value is used by Hash class.
- *
- *  Any hash value that exceeds the capacity of a Fixnum will be truncated
- *  before being used.
- */
-
 VALUE
 rb_obj_id(VALUE obj)
 {
@@ -2408,7 +2400,7 @@ rb_obj_id(VALUE obj)
      *  24 if 32-bit, double is 8-byte aligned
      *  40 if 64-bit
      */
-    if (SYMBOL_P(obj)) {
+    if (STATIC_SYM_P(obj)) {
         return (SYM2ID(obj) * sizeof(RVALUE) + (4 << 2)) | FIXNUM_FLAG;
     }
     else if (FLONUM_P(obj)) {
@@ -2514,6 +2506,7 @@ obj_memsize_of(VALUE obj, int use_tdata)
 	break;
 
       case T_FLOAT:
+      case T_SYMBOL:
 	break;
 
       case T_BIGNUM:
@@ -2897,7 +2890,7 @@ gc_before_sweep(rb_objspace_t *objspace)
 	    malloc_limit = (size_t)(inc * gc_params.malloc_limit_growth_factor);
 	    if (gc_params.malloc_limit_max > 0 && /* ignore max-check if 0 */
 		malloc_limit > gc_params.malloc_limit_max) {
-		malloc_limit = inc;
+		malloc_limit = gc_params.malloc_limit_max;
 	    }
 	}
 	else {
@@ -3933,6 +3926,7 @@ gc_mark_children(rb_objspace_t *objspace, VALUE ptr)
 
       case T_FLOAT:
       case T_BIGNUM:
+      case T_SYMBOL:
 	break;
 
       case T_MATCH:
@@ -5153,14 +5147,14 @@ Init_stack(volatile VALUE *addr)
  *  call-seq:
  *     GC.start                     -> nil
  *     GC.garbage_collect           -> nil
- *     ObjectSpace.garbage_collect  -> nil
- *     GC.start(full_mark: false)   -> nil
+ *     GC.start(full_mark: true, immediate_sweep: true)           -> nil
+ *     GC.garbage_collect(full_mark: true, immediate_sweep: true) -> nil
  *
  *  Initiates garbage collection, unless manually disabled.
  *
  *  This method is defined with keyword arguments that default to true:
  *
- *     def GC.start(full_mark: true, immediate_sweep: true) end
+ *     def GC.start(full_mark: true, immediate_sweep: true); end
  *
  *  Use full_mark: false to perform a minor GC.
  *  Use immediate_sweep: false to defer sweeping (use lazy sweep).
@@ -5331,8 +5325,9 @@ gc_info_decode(int flags, VALUE hash_or_key)
     SET(immediate_sweep, (flags & GPR_FLAG_IMMEDIATE_SWEEP) ? Qtrue : Qfalse);
 #undef SET
 
-    if (key != Qnil) /* matched key should return above */
-	rb_raise(rb_eArgError, "unknown key: %s", RSTRING_PTR(rb_id2str(SYM2ID(key))));
+    if (!NIL_P(key)) {/* matched key should return above */
+	rb_raise(rb_eArgError, "unknown key: %"PRIsVALUE, rb_sym2str(key));
+    }
 
     return hash;
 }
@@ -5492,8 +5487,9 @@ gc_stat_internal(VALUE hash_or_sym, size_t *out)
 #endif /* USE_RGENGC */
 #undef SET
 
-    if (key != Qnil) /* matched key should return above */
-	rb_raise(rb_eArgError, "unknown key: %s", RSTRING_PTR(rb_id2str(SYM2ID(key))));
+    if (!NIL_P(key)) { /* matched key should return above */
+	rb_raise(rb_eArgError, "unknown key: %"PRIsVALUE, rb_sym2str(key));
+    }
 
 #if defined(RGENGC_PROFILE) && RGENGC_PROFILE >= 2
     if (hash != Qnil) {
@@ -6053,12 +6049,12 @@ objspace_malloc_increase(rb_objspace_t *objspace, void *mem, size_t new_size, si
     }
 
     if (type == MEMOP_TYPE_MALLOC) {
-	if (ruby_gc_stress && !ruby_disable_gc_stress) {
+	if (ruby_gc_stress && !ruby_disable_gc_stress && ruby_native_thread_p()) {
 	    garbage_collect_with_gvl(objspace, FALSE, TRUE, GPR_FLAG_MALLOC);
 	}
 	else {
 	  retry:
-	    if (malloc_increase > malloc_limit) {
+	    if (malloc_increase > malloc_limit && ruby_native_thread_p()) {
 		if (ruby_thread_has_gvl_p() && is_lazy_sweeping(heap_eden)) {
 		    gc_rest_sweep(objspace); /* rest_sweep can reduce malloc_increase */
 		    goto retry;
@@ -6246,6 +6242,8 @@ objspace_xcalloc(rb_objspace_t *objspace, size_t count, size_t elsize)
     size = objspace_malloc_prepare(objspace, size);
 
     TRY_WITH_GC(mem = calloc(1, size));
+    size = objspace_malloc_size(objspace, mem, size);
+    objspace_malloc_increase(objspace, mem, size, 0, MEMOP_TYPE_MALLOC);
     return objspace_malloc_fixup(objspace, mem, size);
 }
 

@@ -173,8 +173,9 @@ vm_stat(int argc, VALUE *argv, VALUE self)
     SET(class_serial, ruby_vm_class_serial);
 #undef SET
 
-    if (key != Qnil) /* matched key should return above */
-	rb_raise(rb_eArgError, "unknown key: %s", RSTRING_PTR(rb_id2str(SYM2ID(key))));
+    if (!NIL_P(key)) { /* matched key should return above */
+	rb_raise(rb_eArgError, "unknown key: %"PRIsVALUE, rb_sym2str(key));
+    }
 
     return hash;
 }
@@ -716,7 +717,7 @@ static inline VALUE
 invoke_block_from_c(rb_thread_t *th, const rb_block_t *block,
 		    VALUE self, int argc, const VALUE *argv,
 		    const rb_block_t *blockptr, const NODE *cref,
-		    VALUE defined_class)
+		    VALUE defined_class, int splattable)
 {
     if (SPECIAL_CONST_P(block->iseq))
 	return Qnil;
@@ -734,7 +735,7 @@ invoke_block_from_c(rb_thread_t *th, const rb_block_t *block,
 	}
 
 	opt_pc = vm_yield_setup_args(th, iseq, argc, cfp->sp, blockptr,
-				     type == VM_FRAME_MAGIC_LAMBDA);
+				     (type == VM_FRAME_MAGIC_LAMBDA) ? splattable+1 : 0);
 
 	vm_push_frame(th, iseq, type | VM_FRAME_FLAG_FINISH,
 		      self, defined_class,
@@ -772,7 +773,7 @@ vm_yield_with_cref(rb_thread_t *th, int argc, const VALUE *argv, const NODE *cre
 {
     const rb_block_t *blockptr = check_block(th);
     return invoke_block_from_c(th, blockptr, blockptr->self, argc, argv, 0, cref,
-			       blockptr->klass);
+			       blockptr->klass, 1);
 }
 
 static inline VALUE
@@ -780,7 +781,7 @@ vm_yield(rb_thread_t *th, int argc, const VALUE *argv)
 {
     const rb_block_t *blockptr = check_block(th);
     return invoke_block_from_c(th, blockptr, blockptr->self, argc, argv, 0, 0,
-			       blockptr->klass);
+			       blockptr->klass, 1);
 }
 
 static inline VALUE
@@ -788,7 +789,7 @@ vm_yield_with_block(rb_thread_t *th, int argc, const VALUE *argv, const rb_block
 {
     const rb_block_t *blockptr = check_block(th);
     return invoke_block_from_c(th, blockptr, blockptr->self, argc, argv, blockargptr, 0,
-			       blockptr->klass);
+			       blockptr->klass, 1);
 }
 
 static VALUE
@@ -805,7 +806,7 @@ vm_invoke_proc(rb_thread_t *th, rb_proc_t *proc, VALUE self, VALUE defined_class
 	    th->safe_level = proc->safe_level;
 	}
 	val = invoke_block_from_c(th, &proc->block, self, argc, argv, blockptr, 0,
-				  defined_class);
+				  defined_class, 0);
     }
     TH_POP_TAG();
 
@@ -1147,8 +1148,9 @@ rb_vm_check_redefinition_by_prepend(VALUE klass)
 static void
 add_opt_method(VALUE klass, ID mid, VALUE bop)
 {
-    rb_method_entry_t *me;
-    if (st_lookup(RCLASS_M_TBL(klass), mid, (void *)&me) && me->def &&
+    rb_method_entry_t *me = rb_method_entry_at(klass, mid);
+
+    if (me && me->def &&
 	me->def->type == VM_METHOD_TYPE_CFUNC) {
 	st_insert(vm_opt_method_table, (st_data_t)me, (st_data_t)bop);
     }
@@ -2249,46 +2251,45 @@ m_core_set_postexe(VALUE self)
     return Qnil;
 }
 
+static VALUE m_core_hash_merge_ary(VALUE self, VALUE hash, VALUE ary);
+
+static VALUE
+core_hash_merge(VALUE hash, long argc, const VALUE *argv)
+{
+    long i;
+
+    assert(argc % 2 == 0);
+    for (i=0; i<argc; i+=2) {
+	rb_hash_aset(hash, argv[i], argv[i+1]);
+    }
+    return hash;
+}
+
 static VALUE
 m_core_hash_from_ary(VALUE self, VALUE ary)
 {
     VALUE hash = rb_hash_new();
-    int i;
 
     if (RUBY_DTRACE_HASH_CREATE_ENABLED()) {
 	RUBY_DTRACE_HASH_CREATE(RARRAY_LEN(ary), rb_sourcefile(), rb_sourceline());
     }
 
-    assert(RARRAY_LEN(ary) % 2 == 0);
-    for (i=0; i<RARRAY_LEN(ary); i+=2) {
-	rb_hash_aset(hash, RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1));
-    }
-
-    return hash;
+    return m_core_hash_merge_ary(self, hash, ary);
 }
 
 static VALUE
 m_core_hash_merge_ary(VALUE self, VALUE hash, VALUE ary)
 {
-    int i;
-
-    assert(RARRAY_LEN(ary) % 2 == 0);
-    for (i=0; i<RARRAY_LEN(ary); i+=2) {
-	rb_hash_aset(hash, RARRAY_AREF(ary, i), RARRAY_AREF(ary, i+1));
-    }
-
+    core_hash_merge(hash, RARRAY_LEN(ary), RARRAY_CONST_PTR(ary));
     return hash;
 }
 
 static VALUE
 m_core_hash_merge_ptr(int argc, VALUE *argv, VALUE recv)
 {
-    int i;
     VALUE hash = argv[0];
 
-    for (i=1; i<argc; i+=2) {
-	rb_hash_aset(hash, argv[i], argv[i+1]);
-    }
+    core_hash_merge(hash, argc-1, argv+1);
 
     return hash;
 }

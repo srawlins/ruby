@@ -146,6 +146,9 @@ rb_obj_equal(VALUE obj1, VALUE obj2)
 }
 
 /*
+ * call-seq:
+ *    obj.hash    -> fixnum
+ *
  * Generates a Fixnum hash value for this object.  This function must have the
  * property that <code>a.eql?(b)</code> implies <code>a.hash == b.hash</code>.
  *
@@ -1837,7 +1840,7 @@ rb_class_allocate_instance(VALUE klass)
  */
 
 VALUE
-rb_class_new_instance(int argc, VALUE *argv, VALUE klass)
+rb_class_new_instance(int argc, const VALUE *argv, VALUE klass)
 {
     VALUE obj;
 
@@ -2122,7 +2125,7 @@ rb_mod_const_get(int argc, VALUE *argv, VALUE mod)
 
 	if (pbeg == p) goto wrong_name;
 
-	id = rb_check_id_cstr(pbeg, len = p-pbeg, enc);
+	id = rb_check_id_cstr_without_pindown(pbeg, len = p-pbeg, enc);
 	beglen = pbeg-path;
 
 	if (p < pend && p[0] == ':') {
@@ -2264,7 +2267,7 @@ rb_mod_const_defined(int argc, VALUE *argv, VALUE mod)
 
 	if (pbeg == p) goto wrong_name;
 
-	id = rb_check_id_cstr(pbeg, len = p-pbeg, enc);
+	id = rb_check_id_cstr_without_pindown(pbeg, len = p-pbeg, enc);
 	beglen = pbeg-path;
 
 	if (p < pend && p[0] == ':') {
@@ -2335,7 +2338,7 @@ rb_mod_const_defined(int argc, VALUE *argv, VALUE mod)
 static VALUE
 rb_obj_ivar_get(VALUE obj, VALUE iv)
 {
-    ID id = rb_check_id(&iv);
+    ID id = rb_check_id_without_pindown(&iv);
 
     if (!id) {
 	if (rb_is_instance_name(iv)) {
@@ -2406,7 +2409,7 @@ rb_obj_ivar_set(VALUE obj, VALUE iv, VALUE val)
 static VALUE
 rb_obj_ivar_defined(VALUE obj, VALUE iv)
 {
-    ID id = rb_check_id(&iv);
+    ID id = rb_check_id_without_pindown(&iv);
 
     if (!id) {
 	if (rb_is_instance_name(iv)) {
@@ -2443,7 +2446,7 @@ rb_obj_ivar_defined(VALUE obj, VALUE iv)
 static VALUE
 rb_mod_cvar_get(VALUE obj, VALUE iv)
 {
-    ID id = rb_check_id(&iv);
+    ID id = rb_check_id_without_pindown(&iv);
 
     if (!id) {
 	if (rb_is_class_name(iv)) {
@@ -2509,7 +2512,7 @@ rb_mod_cvar_set(VALUE obj, VALUE iv, VALUE val)
 static VALUE
 rb_mod_cvar_defined(VALUE obj, VALUE iv)
 {
-    ID id = rb_check_id(&iv);
+    ID id = rb_check_id_without_pindown(&iv);
 
     if (!id) {
 	if (rb_is_class_name(iv)) {
@@ -2743,13 +2746,15 @@ rb_Integer(VALUE val)
  *  In any case, strings should be strictly conformed to numeric
  *  representation. This behavior is different from that of
  *  <code>String#to_i</code>.  Non string values will be converted using
- *  <code>to_int</code>, and <code>to_i</code>.
+ *  <code>to_int</code>, and <code>to_i</code>. Passing <code>nil</code>
+ *  raises a TypeError.
  *
  *     Integer(123.999)    #=> 123
  *     Integer("0x1a")     #=> 26
  *     Integer(Time.new)   #=> 1204973019
  *     Integer("0930", 10) #=> 930
  *     Integer("111", 2)   #=> 7
+ *     Integer(nil)        #=> TypeError
  */
 
 static VALUE

@@ -116,11 +116,15 @@ class TestProcess < Test::Unit::TestCase
     }
     assert_raise(ArgumentError) { Process.getrlimit(:FOO) }
     assert_raise(ArgumentError) { Process.getrlimit("FOO") }
+    assert_raise_with_message(ArgumentError, /\u{30eb 30d3 30fc}/) { Process.getrlimit("\u{30eb 30d3 30fc}") }
   end
 
   def test_rlimit_value
     return unless rlimit_exist?
+    assert_raise(ArgumentError) { Process.setrlimit(:FOO, 0) }
     assert_raise(ArgumentError) { Process.setrlimit(:CORE, :FOO) }
+    assert_raise_with_message(ArgumentError, /\u{30eb 30d3 30fc}/) { Process.setrlimit("\u{30eb 30d3 30fc}", 0) }
+    assert_raise_with_message(ArgumentError, /\u{30eb 30d3 30fc}/) { Process.setrlimit(:CORE, "\u{30eb 30d3 30fc}") }
     with_tmpchdir do
       s = run_in_child(<<-'End')
         cur, max = Process.getrlimit(:NOFILE)
@@ -131,7 +135,7 @@ class TestProcess < Test::Unit::TestCase
           exit false
         end
       End
-      assert_not_equal(0, s.exitstatus)
+      assert_not_predicate(s, :success?)
       s = run_in_child(<<-'End')
         cur, max = Process.getrlimit(:NOFILE)
         Process.setrlimit(:NOFILE, [max-10, cur].min)
@@ -141,7 +145,7 @@ class TestProcess < Test::Unit::TestCase
           exit false
         end
       End
-      assert_not_equal(0, s.exitstatus)
+      assert_not_predicate(s, :success?)
     end
   end
 

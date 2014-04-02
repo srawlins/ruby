@@ -157,6 +157,14 @@ get_encoding(VALUE str)
     return get_actual_encoding(ENCODING_GET(str), str);
 }
 
+static void
+mustnot_broken(VALUE str)
+{
+    if (is_broken_string(str)) {
+	rb_raise(rb_eArgError, "invalid byte sequence in %s", rb_enc_name(STR_ENC_GET(str)));
+    }
+}
+
 static int fstring_cmp(VALUE a, VALUE b);
 
 static st_table* frozen_strings;
@@ -2337,7 +2345,9 @@ rb_str_hash_cmp(VALUE str1, VALUE str2)
  * call-seq:
  *    str.hash   -> fixnum
  *
- * Return a hash based on the string's length and content.
+ * Return a hash based on the string's length, content and encoding.
+ *
+ * See also Object#hash.
  */
 
 static VALUE
@@ -2896,7 +2906,7 @@ rb_str_match(VALUE x, VALUE y)
 }
 
 
-static VALUE get_pat(VALUE, int);
+static VALUE get_pat(VALUE);
 
 
 /*
@@ -2936,7 +2946,7 @@ rb_str_match_m(int argc, VALUE *argv, VALUE str)
 	rb_check_arity(argc, 1, 2);
     re = argv[0];
     argv[0] = str;
-    result = rb_funcall2(get_pat(re, 0), rb_intern("match"), argc, argv);
+    result = rb_funcall2(get_pat(re), rb_intern("match"), argc, argv);
     if (!NIL_P(result) && rb_block_given_p()) {
 	return rb_yield(result);
     }
@@ -3827,11 +3837,12 @@ rb_str_slice_bang(int argc, VALUE *argv, VALUE str)
 }
 
 static VALUE
-get_pat(VALUE pat, int quote)
+get_pat(VALUE pat)
 {
     VALUE val;
 
-    switch (TYPE(pat)) {
+    if (SPECIAL_CONST_P(pat)) goto to_string;
+    switch (BUILTIN_TYPE(pat)) {
       case T_REGEXP:
 	return pat;
 
@@ -3839,6 +3850,7 @@ get_pat(VALUE pat, int quote)
 	break;
 
       default:
+      to_string:
 	val = rb_check_string_type(pat);
 	if (NIL_P(val)) {
 	    Check_Type(pat, T_REGEXP);
@@ -3846,11 +3858,58 @@ get_pat(VALUE pat, int quote)
 	pat = val;
     }
 
-    if (quote) {
-	pat = rb_reg_quote(pat);
-    }
-
     return rb_reg_regcomp(pat);
+}
+
+static VALUE
+get_pat_quoted(VALUE pat, int check)
+{
+    VALUE val;
+
+    if (SPECIAL_CONST_P(pat)) goto to_string;
+    switch (BUILTIN_TYPE(pat)) {
+      case T_REGEXP:
+	return pat;
+
+      case T_STRING:
+	break;
+
+      default:
+      to_string:
+	val = rb_check_string_type(pat);
+	if (NIL_P(val)) {
+	    Check_Type(pat, T_REGEXP);
+	}
+	pat = val;
+    }
+    if (check && is_broken_string(pat)) {
+	rb_raise(rb_eTypeError, "%"PRIsVALUE, rb_reg_new_str(pat, 0));
+    }
+    return pat;
+}
+
+static long
+rb_pat_search(VALUE pat, VALUE str, long pos, int set_backref_str)
+{
+    if (BUILTIN_TYPE(pat) == T_STRING) {
+	pos = rb_str_index(str, pat, pos);
+	if (set_backref_str) {
+	    if (pos >= 0) {
+		VALUE match;
+		str = rb_str_new_frozen(str);
+		rb_backref_set_string(str, pos, RSTRING_LEN(pat));
+		match = rb_backref_get();
+		OBJ_INFECT(match, pat);
+	    }
+	    else {
+		rb_backref_set(Qnil);
+	    }
+	}
+	return pos;
+    }
+    else {
+	return rb_reg_search0(pat, str, pos, 0, set_backref_str);
+    }
 }
 
 
@@ -3873,6 +3932,7 @@ rb_str_sub_bang(int argc, VALUE *argv, VALUE str)
     int tainted = 0;
     long plen;
     int min_arity = rb_block_given_p() ? 1 : 2;
+    long beg;
 
     rb_check_arity(argc, min_arity, 2);
     if (argc == 1) {
@@ -3887,23 +3947,37 @@ rb_str_sub_bang(int argc, VALUE *argv, VALUE str)
 	if (OBJ_TAINTED(repl)) tainted = 1;
     }
 
-    pat = get_pat(argv[0], 1);
+    pat = get_pat_quoted(argv[0], 1);
+
     str_modifiable(str);
-    if (rb_reg_search(pat, str, 0, 0) >= 0) {
+    beg = rb_pat_search(pat, str, 0, 1);
+    if (beg >= 0) {
 	rb_encoding *enc;
 	int cr = ENC_CODERANGE(str);
-	VALUE match = rb_backref_get();
-	struct re_registers *regs = RMATCH_REGS(match);
-	long beg0 = BEG(0);
-	long end0 = END(0);
+	long beg0, end0;
+	VALUE match, match0 = Qnil;
+	struct re_registers *regs;
 	char *p, *rp;
 	long len, rlen;
+
+	match = rb_backref_get();
+	regs = RMATCH_REGS(match);
+	if (RB_TYPE_P(pat, T_STRING)) {
+	    beg0 = beg;
+	    end0 = beg0 + RSTRING_LEN(pat);
+	    match0 = pat;
+	}
+	else {
+	    beg0 = BEG(0);
+	    end0 = END(0);
+	    if (iter) match0 = rb_reg_nth_match(0, match);
+	}
 
 	if (iter || !NIL_P(hash)) {
 	    p = RSTRING_PTR(str); len = RSTRING_LEN(str);
 
             if (iter) {
-                repl = rb_obj_as_string(rb_yield(rb_reg_nth_match(0, match)));
+                repl = rb_obj_as_string(rb_yield(match0));
             }
             else {
                 repl = rb_hash_aref(hash, rb_str_subseq(str, beg0, end0 - beg0));
@@ -3913,8 +3987,9 @@ rb_str_sub_bang(int argc, VALUE *argv, VALUE str)
 	    rb_check_frozen(str);
 	}
 	else {
-	    repl = rb_reg_regsub(repl, str, regs, pat);
+	    repl = rb_reg_regsub(repl, str, regs, RB_TYPE_P(pat, T_STRING) ? Qnil : pat);
 	}
+
         enc = rb_enc_compatible(str, repl);
         if (!enc) {
             rb_encoding *str_enc = STR_ENC_GET(str);
@@ -4011,20 +4086,21 @@ rb_str_sub(int argc, VALUE *argv, VALUE str)
 static VALUE
 str_gsub(int argc, VALUE *argv, VALUE str, int bang)
 {
-    VALUE pat, val, repl, match, dest, hash = Qnil;
+    VALUE pat, val = Qnil, repl, match, match0 = Qnil, dest, hash = Qnil;
     struct re_registers *regs;
     long beg, n;
     long beg0, end0;
     long offset, blen, slen, len, last;
-    int iter = 0;
+    enum {STR, ITER, MAP} mode = STR;
     char *sp, *cp;
     int tainted = 0;
+    int need_backref = -1;
     rb_encoding *str_enc;
 
     switch (argc) {
       case 1:
 	RETURN_ENUMERATOR(str, argc, argv);
-	iter = 1;
+	mode = ITER;
 	break;
       case 2:
 	repl = argv[1];
@@ -4032,14 +4108,17 @@ str_gsub(int argc, VALUE *argv, VALUE str, int bang)
 	if (NIL_P(hash)) {
 	    StringValue(repl);
 	}
+	else {
+	    mode = MAP;
+	}
 	if (OBJ_TAINTED(repl)) tainted = 1;
 	break;
       default:
 	rb_check_arity(argc, 1, 2);
     }
 
-    pat = get_pat(argv[0], 1);
-    beg = rb_reg_search(pat, str, 0, 0);
+    pat = get_pat_quoted(argv[0], 1);
+    beg = rb_pat_search(pat, str, 0, need_backref);
     if (beg < 0) {
 	if (bang) return Qnil;	/* no match, no substitution */
 	return rb_str_dup(str);
@@ -4058,16 +4137,26 @@ str_gsub(int argc, VALUE *argv, VALUE str, int bang)
 
     do {
 	n++;
+
 	match = rb_backref_get();
 	regs = RMATCH_REGS(match);
-	beg0 = BEG(0);
-	end0 = END(0);
-	if (iter || !NIL_P(hash)) {
-            if (iter) {
-                val = rb_obj_as_string(rb_yield(rb_reg_nth_match(0, match)));
+	if (RB_TYPE_P(pat, T_STRING)) {
+	    beg0 = beg;
+	    end0 = beg0 + RSTRING_LEN(pat);
+	    match0 = pat;
+	}
+	else {
+	    beg0 = BEG(0);
+	    end0 = END(0);
+	    if (mode == ITER) match0 = rb_reg_nth_match(0, match);
+	}
+
+	if (mode) {
+            if (mode == ITER) {
+                val = rb_obj_as_string(rb_yield(match0));
             }
             else {
-                val = rb_hash_aref(hash, rb_str_subseq(str, BEG(0), END(0) - BEG(0)));
+                val = rb_hash_aref(hash, rb_str_subseq(str, beg0, end0 - beg0));
                 val = rb_obj_as_string(val);
             }
 	    str_mod_check(str, sp, slen);
@@ -4075,9 +4164,16 @@ str_gsub(int argc, VALUE *argv, VALUE str, int bang)
 		rb_raise(rb_eRuntimeError, "block should not cheat");
 	    }
 	}
-	else {
-	    val = rb_reg_regsub(repl, str, regs, pat);
+	else if (need_backref) {
+	    val = rb_reg_regsub(repl, str, regs, RB_TYPE_P(pat, T_STRING) ? Qnil : pat);
+	    if (need_backref < 0) {
+		need_backref = val != repl;
+	    }
 	}
+	else {
+	    val = repl;
+	}
+
 
 	if (OBJ_TAINTED(val)) tainted = 1;
 
@@ -4102,12 +4198,12 @@ str_gsub(int argc, VALUE *argv, VALUE str, int bang)
 	}
 	cp = RSTRING_PTR(str) + offset;
 	if (offset > RSTRING_LEN(str)) break;
-	beg = rb_reg_search(pat, str, offset, 0);
+	beg = rb_pat_search(pat, str, offset, need_backref);
     } while (beg >= 0);
     if (RSTRING_LEN(str) > offset) {
         rb_enc_str_buf_cat(dest, cp, RSTRING_LEN(str) - offset, str_enc);
     }
-    rb_reg_search(pat, str, last, 0);
+    rb_pat_search(pat, str, last, 1);
     if (bang) {
         rb_str_shared_replace(str, dest);
     }
@@ -6106,7 +6202,8 @@ rb_str_split_m(int argc, VALUE *argv, VALUE str)
     }
     else {
       fs_set:
-	if (RB_TYPE_P(spat, T_STRING)) {
+	spat = get_pat_quoted(spat, 1);
+	if (BUILTIN_TYPE(spat) == T_STRING) {
 	    rb_encoding *enc2 = STR_ENC_GET(spat);
 
 	    split_type = string;
@@ -6129,7 +6226,6 @@ rb_str_split_m(int argc, VALUE *argv, VALUE str)
 	    }
 	}
 	else {
-	    spat = get_pat(spat, 1);
 	    split_type = regexp;
 	}
     }
@@ -6203,12 +6299,8 @@ rb_str_split_m(int argc, VALUE *argv, VALUE str)
 	char *sptr = RSTRING_PTR(spat);
 	long slen = RSTRING_LEN(spat);
 
-	if (is_broken_string(str)) {
-	    rb_raise(rb_eArgError, "invalid byte sequence in %s", rb_enc_name(STR_ENC_GET(str)));
-	}
-	if (is_broken_string(spat)) {
-	    rb_raise(rb_eArgError, "invalid byte sequence in %s", rb_enc_name(STR_ENC_GET(spat)));
-	}
+	mustnot_broken(str);
+	mustnot_broken(spat);
 	enc = rb_enc_check(str, spat);
 	while (ptr < eptr &&
 	       (end = rb_memsearch(sptr, slen, ptr, eptr - ptr, enc)) >= 0) {
@@ -7135,7 +7227,7 @@ scan_once(VALUE str, VALUE pat, long *start)
     struct re_registers *regs;
     int i;
 
-    if (rb_reg_search(pat, str, *start, 0) >= 0) {
+    if (rb_pat_search(pat, str, *start, 1) >= 0) {
 	match = rb_backref_get();
 	regs = RMATCH_REGS(match);
 	if (BEG(0) == END(0)) {
@@ -7205,7 +7297,8 @@ rb_str_scan(VALUE str, VALUE pat)
     long last = -1, prev = 0;
     char *p = RSTRING_PTR(str); long len = RSTRING_LEN(str);
 
-    pat = get_pat(pat, 1);
+    pat = get_pat_quoted(pat, 1);
+    mustnot_broken(str);
     if (!rb_block_given_p()) {
 	VALUE ary = rb_ary_new();
 
@@ -7214,7 +7307,7 @@ rb_str_scan(VALUE str, VALUE pat)
 	    prev = start;
 	    rb_ary_push(ary, result);
 	}
-	if (last >= 0) rb_reg_search(pat, str, last, 0);
+	if (last >= 0) rb_pat_search(pat, str, last, 1);
 	return ary;
     }
 
@@ -7224,7 +7317,7 @@ rb_str_scan(VALUE str, VALUE pat)
 	rb_yield(result);
 	str_mod_check(str, p, len);
     }
-    if (last >= 0) rb_reg_search(pat, str, last, 0);
+    if (last >= 0) rb_pat_search(pat, str, last, 1);
     return str;
 }
 
@@ -7324,26 +7417,6 @@ rb_str_crypt(VALUE str, VALUE salt)
     return result;
 }
 
-
-/*
- *  call-seq:
- *     str.intern   -> symbol
- *     str.to_sym   -> symbol
- *
- *  Returns the <code>Symbol</code> corresponding to <i>str</i>, creating the
- *  symbol if it did not previously exist. See <code>Symbol#id2name</code>.
- *
- *     "Koala".intern         #=> :Koala
- *     s = 'cat'.to_sym       #=> :cat
- *     s == :cat              #=> true
- *     s = '@cat'.to_sym      #=> :@cat
- *     s == :@cat             #=> true
- *
- *  This can also be used to create symbols that cannot be represented using the
- *  <code>:xxx</code> notation.
- *
- *     'cat and dog'.to_sym   #=> :"cat and dog"
- */
 
 VALUE
 rb_str_intern(VALUE s)
@@ -7611,30 +7684,20 @@ static VALUE
 rb_str_partition(VALUE str, VALUE sep)
 {
     long pos;
-    int regex = FALSE;
 
+    sep = get_pat_quoted(sep, 0);
     if (RB_TYPE_P(sep, T_REGEXP)) {
 	pos = rb_reg_search(sep, str, 0, 0);
-	regex = TRUE;
-    }
-    else {
-	VALUE tmp;
-
-	tmp = rb_check_string_type(sep);
-	if (NIL_P(tmp)) {
-	    rb_raise(rb_eTypeError, "type mismatch: %s given",
-		     rb_obj_classname(sep));
+	if (pos < 0) {
+	  failed:
+	    return rb_ary_new3(3, str, str_new_empty(str), str_new_empty(str));
 	}
-	sep = tmp;
-	pos = rb_str_index(str, sep, 0);
-    }
-    if (pos < 0) {
-      failed:
-	return rb_ary_new3(3, str, str_new_empty(str), str_new_empty(str));
-    }
-    if (regex) {
 	sep = rb_str_subpat(str, sep, INT2FIX(0));
 	if (pos == 0 && RSTRING_LEN(sep) == 0) goto failed;
+    }
+    else {
+	pos = rb_str_index(str, sep, 0);
+	if (pos < 0) goto failed;
     }
     return rb_ary_new3(3, rb_str_subseq(str, 0, pos),
 		          sep,
@@ -8341,10 +8404,9 @@ sym_inspect(VALUE sym)
     VALUE str;
     const char *ptr;
     long len;
-    ID id = SYM2ID(sym);
     char *dest;
 
-    sym = rb_id2str(id);
+    sym = rb_sym2str(sym);
     if (!rb_str_symname_p(sym)) {
 	str = rb_str_inspect(sym);
 	len = RSTRING_LEN(str);
@@ -8380,9 +8442,7 @@ sym_inspect(VALUE sym)
 VALUE
 rb_sym_to_s(VALUE sym)
 {
-    ID id = SYM2ID(sym);
-
-    return str_new_shared(rb_cString, rb_id2str(id));
+    return str_new_shared(rb_cString, rb_sym2str(sym));
 }
 
 
@@ -8464,7 +8524,7 @@ sym_to_proc(VALUE sym)
 static VALUE
 sym_succ(VALUE sym)
 {
-    return rb_str_intern(rb_str_succ(rb_sym_to_s(sym)));
+    return rb_str_dynamic_intern(rb_str_succ(rb_sym_to_s(sym)));
 }
 
 /*
@@ -8548,7 +8608,7 @@ sym_aref(int argc, VALUE *argv, VALUE sym)
 static VALUE
 sym_length(VALUE sym)
 {
-    return rb_str_length(rb_id2str(SYM2ID(sym)));
+    return rb_str_length(rb_sym2str(sym));
 }
 
 /*
@@ -8561,7 +8621,7 @@ sym_length(VALUE sym)
 static VALUE
 sym_empty(VALUE sym)
 {
-    return rb_str_empty(rb_id2str(SYM2ID(sym)));
+    return rb_str_empty(rb_sym2str(sym));
 }
 
 /*
@@ -8574,7 +8634,7 @@ sym_empty(VALUE sym)
 static VALUE
 sym_upcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_upcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_upcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8587,7 +8647,7 @@ sym_upcase(VALUE sym)
 static VALUE
 sym_downcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_downcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_downcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8600,7 +8660,7 @@ sym_downcase(VALUE sym)
 static VALUE
 sym_capitalize(VALUE sym)
 {
-    return rb_str_intern(rb_str_capitalize(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_capitalize(rb_sym2str(sym)));
 }
 
 /*
@@ -8613,7 +8673,7 @@ sym_capitalize(VALUE sym)
 static VALUE
 sym_swapcase(VALUE sym)
 {
-    return rb_str_intern(rb_str_swapcase(rb_id2str(SYM2ID(sym))));
+    return rb_str_dynamic_intern(rb_str_swapcase(rb_sym2str(sym)));
 }
 
 /*
@@ -8626,7 +8686,7 @@ sym_swapcase(VALUE sym)
 static VALUE
 sym_encoding(VALUE sym)
 {
-    return rb_obj_encoding(rb_id2str(SYM2ID(sym)));
+    return rb_obj_encoding(rb_sym2str(sym));
 }
 
 ID
@@ -8738,8 +8798,8 @@ Init_String(void)
     rb_define_method(rb_cString, "<<", rb_str_concat, 1);
     rb_define_method(rb_cString, "prepend", rb_str_prepend, 1);
     rb_define_method(rb_cString, "crypt", rb_str_crypt, 1);
-    rb_define_method(rb_cString, "intern", rb_str_intern, 0);
-    rb_define_method(rb_cString, "to_sym", rb_str_intern, 0);
+    rb_define_method(rb_cString, "intern", rb_str_dynamic_intern, 0); /* in parse.y */
+    rb_define_method(rb_cString, "to_sym", rb_str_dynamic_intern, 0); /* in parse.y */
     rb_define_method(rb_cString, "ord", rb_str_ord, 0);
 
     rb_define_method(rb_cString, "include?", rb_str_include, 1);

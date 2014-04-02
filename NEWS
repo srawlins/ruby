@@ -17,13 +17,15 @@ with all sufficient information, see the ChangeLog file.
 
 * Enumerable
   * Extended methods:
-    * min
-    * min_by
-    * max
-    * max_by
+    * min, min_by, max and max_by supports optional argument to return
+      multiple elements.
+
 * Symbol
   * New methods
     * Symbol.find(str) returns whether given string is defined as symbol or not.
+  * Improvements
+    * Most symbols which are returned by String#to_sym and
+      String#intern are GC-able.
 
 === Core classes compatibility issues (excluding feature bug fixes)
 
@@ -32,8 +34,18 @@ with all sufficient information, see the ChangeLog file.
     * When flushing file IO, you cannot assume that the metadata of the file
       is updated immediately.  On some platforms (especially Windows), it is
       delayed until the filesystem load is decreased.
+* Proc
+  * incompatible changes:
+    * ArgumentError is no longer raised when lambda Proc is passed as a
+      block, and the number of yielded arguments does not match the formal
+      arguments of the lambda, if just an array is yielded and its length
+      matches.
 
 === Stdlib updates (outstanding ones only)
+
+* Find, Pathname
+  * Extended methods:
+    * find method accepts "ignore_error" keyword argument.
 
 === Stdlib compatibility issues (excluding feature bug fixes)
 
@@ -74,3 +86,15 @@ with all sufficient information, see the ChangeLog file.
 
 * struct RBignum is hidden.  [Feature #6083]
   Use rb_integer_pack and rb_integer_unpack instead.
+
+* st hash table uses power-of-two sizes for speed [Feature #9425].
+  Lookups are 10-25% faster if using appropriate hash functions.
+  However, weaknesses in hash distribution can no longer be masked
+  by prime number-sized tables, so extensions may need to tweak
+  hash functions to ensure good distribution.
+
+* rb_sym2str() added. This is almost same as `rb_id2str(SYM2ID(sym))`
+  but not pinning a dynamic symbol.
+
+* struct RSymbol added. This represents a dynamic symbol as object in
+  Ruby's heaps.

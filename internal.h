@@ -729,6 +729,9 @@ struct RBasicRaw {
 } while (0)
 
 /* parse.y */
+#ifndef USE_SYMBOL_GC
+#define USE_SYMBOL_GC 1
+#endif
 VALUE rb_parser_get_yydebug(VALUE);
 VALUE rb_parser_set_yydebug(VALUE, VALUE);
 int rb_is_const_name(VALUE name);
@@ -742,6 +745,14 @@ int rb_is_junk_name(VALUE name);
 void rb_gc_mark_parser(void);
 void rb_gc_mark_symbols(int full_mark);
 ID rb_make_internal_id(void);
+void rb_gc_free_dsymbol(VALUE);
+VALUE rb_str_dynamic_intern(VALUE);
+ID rb_check_id_without_pindown(VALUE *);
+ID rb_sym2id_without_pindown(VALUE);
+#ifdef RUBY_ENCODING_H
+ID rb_check_id_cstr_without_pindown(const char *, long, rb_encoding *);
+#endif
+ID rb_id_attrget(ID id);
 
 /* proc.c */
 VALUE rb_proc_location(VALUE self);
@@ -810,6 +821,8 @@ VALUE rb_rational_reciprocal(VALUE x);
 /* re.c */
 VALUE rb_reg_compile(VALUE str, int options, const char *sourcefile, int sourceline);
 VALUE rb_reg_check_preprocess(VALUE);
+long rb_reg_search0(VALUE, VALUE, long, int, int);
+void rb_backref_set_string(VALUE string, long pos, long len);
 
 /* signal.c */
 int rb_get_next_signal(void);
@@ -963,9 +976,9 @@ VALUE rb_int_positive_pow(long x, unsigned long y);
 /* process.c */
 int rb_exec_async_signal_safe(const struct rb_execarg *e, char *errmsg, size_t errmsg_buflen);
 rb_pid_t rb_fork_async_signal_safe(int *status, int (*chfunc)(void*, char *, size_t), void *charg, VALUE fds, char *errmsg, size_t errmsg_buflen);
-VALUE rb_execarg_new(int argc, VALUE *argv, int accept_shell);
+VALUE rb_execarg_new(int argc, const VALUE *argv, int accept_shell);
 struct rb_execarg *rb_execarg_get(VALUE execarg_obj); /* dangerous.  needs GC guard. */
-VALUE rb_execarg_init(int argc, VALUE *argv, int accept_shell, VALUE execarg_obj);
+VALUE rb_execarg_init(int argc, const VALUE *argv, int accept_shell, VALUE execarg_obj);
 int rb_execarg_addopt(VALUE execarg_obj, VALUE key, VALUE val);
 void rb_execarg_fixup(VALUE execarg_obj);
 int rb_execarg_run_options(const struct rb_execarg *e, struct rb_execarg *s, char* errmsg, size_t errmsg_buflen);
