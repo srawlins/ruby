@@ -2012,6 +2012,8 @@ class TestArray < Test::Unit::TestCase
 
   def test_reject
     assert_equal([1, 3], [0, 1, 2, 3].reject {|x| x % 2 == 0 })
+    assert_equal(["quux"], ["foo", "bar", "baz", "quux"].reject(/ba/, /f/))
+    assert_equal(["two", :bar], [1, "two", 3.1, {}, :bar].reject(Numeric, Enumerable))
   end
 
   def test_zip

@@ -2814,7 +2814,8 @@ rb_ary_select(int argc, VALUE *argv, VALUE ary)
 		rb_ary_push(result, rb_ary_elt(ary, i));
 	    }
 	}
-    } else {
+    }
+    else {
 	if (rb_block_given_p())
 	    rb_warn("given block not used");
 
@@ -3096,20 +3097,6 @@ rb_ary_slice_bang(int argc, VALUE *argv, VALUE ary)
 }
 
 static VALUE
-ary_reject(VALUE orig, VALUE result)
-{
-    long i;
-
-    for (i = 0; i < RARRAY_LEN(orig); i++) {
-	VALUE v = RARRAY_AREF(orig, i);
-	if (!RTEST(rb_yield(v))) {
-	    rb_ary_push_1(result, v);
-	}
-    }
-    return result;
-}
-
-static VALUE
 ary_reject_bang(VALUE ary)
 {
     long i;
@@ -3155,25 +3142,65 @@ rb_ary_reject_bang(VALUE ary)
 /*
  *  call-seq:
  *     ary.reject  {|item| block }  -> new_ary
+ *     ary.reject(selector, ...)    -> new_ary
  *     ary.reject                   -> Enumerator
  *
- *  Returns a new array containing the items in +self+ for which the given
- *  block is not +true+.
+ *  If a list of selectors is given, returns a new array containing all
+ *  elements of +ary+ for which <code>selector === ary</code> is a false value
+ *  for any of the selectors.
  *
- *  See also Array#delete_if
+ *  If no arguments are given, returns a new array containing all elements of
+ *  +ary+ for which the given block returns a false value.
  *
  *  If no block is given, an Enumerator is returned instead.
+ *
+ *     %w{ foo bar baz quux }.reject(/ba/, /f/)  #=> ["quux"]
+ *
+ *     [1, "two", 3.14, {}, :five].reject(Numeric, Enumerable)  #=> ["two", :five]
+ *
+ *     [1,2,3,4,5].reject { |num|  num.even?  }  #=> [1, 3, 5]
+ *
+ *     a = %w{ a b c d e f }
+ *     a.reject { |v| v =~ /[aeiou]/ }  #=> ["b", "c", "d", "f"]
+ *
+ *  See also Array#delete_if
  */
 
 static VALUE
-rb_ary_reject(VALUE ary)
+rb_ary_reject(int argc, VALUE *argv, VALUE ary)
 {
-    VALUE rejected_ary;
+    VALUE result;
+    long i, j, should_reject;
 
-    RETURN_SIZED_ENUMERATOR(ary, 0, 0, ary_enum_length);
-    rejected_ary = rb_ary_new();
-    ary_reject(ary, rejected_ary);
-    return rejected_ary;
+    if (argc == 0) {
+        RETURN_SIZED_ENUMERATOR(ary, 0, 0, ary_enum_length);
+	result = rb_ary_new();
+	for (i = 0; i < RARRAY_LEN(ary); i++) {
+	    if (!RTEST(rb_yield(RARRAY_AREF(ary, i)))) {
+		rb_ary_push_1(result, rb_ary_elt(ary, i));
+	    }
+	}
+    }
+    else {
+	if (rb_block_given_p())
+	    rb_warn("given block not used");
+
+	result = rb_ary_new();
+	for (i = 0; i < RARRAY_LEN(ary); i++) {
+	    should_reject = 1;
+	    for (j = 0; j < argc; j++) {
+		if (RTEST(rb_funcall(argv[j], idEqq, 1, RARRAY_AREF(ary, i)))) {
+		    should_reject = 0;
+		    break;
+		}
+	    }
+
+	    if (should_reject)
+		rb_ary_push_1(result, rb_ary_elt(ary, i));
+	}
+    }
+
+    return result;
 }
 
 /*
@@ -5699,7 +5726,7 @@ Init_Array(void)
     rb_define_method(rb_cArray, "delete", rb_ary_delete, 1);
     rb_define_method(rb_cArray, "delete_at", rb_ary_delete_at_m, 1);
     rb_define_method(rb_cArray, "delete_if", rb_ary_delete_if, 0);
-    rb_define_method(rb_cArray, "reject", rb_ary_reject, 0);
+    rb_define_method(rb_cArray, "reject", rb_ary_reject, -1);
     rb_define_method(rb_cArray, "reject!", rb_ary_reject_bang, 0);
     rb_define_method(rb_cArray, "zip", rb_ary_zip, -1);
     rb_define_method(rb_cArray, "transpose", rb_ary_transpose, 0);
